@@ -4,7 +4,7 @@
 
 Поставил один раз — и забыл. Работает в фоне, значок у часов показывает, всё ли в порядке.
 
-[English version](README.md)
+[English version](README.en.md)
 
 ---
 
