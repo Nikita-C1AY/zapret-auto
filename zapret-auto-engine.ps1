@@ -1,9 +1,10 @@
-# zapret-auto-engine.ps1 - checks, rating and the main loop of Zapret Auto (v9.5)
+﻿# zapret-auto-engine.ps1 - checks, rating and the main loop of Zapret Auto (v9.5.2)
 # Do not run this file directly: zapret-auto.ps1 loads it at the end.
-if (-not $ZapretDir) { Write-Host "Start zapret-auto.ps1 (or START zapret-auto.bat), not this file."; exit 1 }
+if (-not $ZapretDir) { Write-Host "Start zapret-auto.ps1 (or the START bat), not this file."; exit 1 }
 
 # ===================== STATS =====================
 $Stats = @{}
+$script:Quar = @{}
 function Load-Stats {
   if (-not (Test-Path $StatsFile)) { return $false }
   try {
@@ -34,9 +35,9 @@ function Get-Order {
 }
 function Show-Top {
   $order = Get-Order; $n = [math]::Min(5, $order.Count)
-  Write-Host ("  ---- " + (T "top" "TOP {0}" $n) + " ----") -ForegroundColor DarkCyan
+  Write-Host (" ---- " + (T "top" "TOP {0}" $n) + " ----") -ForegroundColor DarkCyan
   for ($i = 0; $i -lt $n; $i++) {
-    $mark = ""; if ($order[$i] -eq $Prefer) { $mark = "  " + (T "fav.mark" "[favourite]") }
+    $mark = ""; if ($order[$i] -eq $Prefer) { $mark = " " + (T "fav.mark" "[favourite]") }
     Write-Host ("  {0}. {1}  ({2}){3}" -f ($i + 1), $order[$i], [math]::Round((Get-Score $order[$i]), 1), $mark) -ForegroundColor DarkCyan
   }
 }
@@ -59,10 +60,10 @@ function Test-Internet {
 }
 function Wait-Internet {
   if (Test-Internet) { return }
-  State "nointernet"
+  State "nointernet"; $offSince = Get-Date
   Log (T "noinet" "No internet connection - waiting, ratings are not touched") "Magenta"
-  while (-not (Test-Internet)) { Start-Sleep 15 }
-  Log (T "inet.back" "Internet is back") "Magenta"
+  while (-not (Test-Internet)) { Beat; Start-Sleep 15 }
+  Log (T "inet.back" "Internet is back") "Magenta"; $script:aliveSince = $script:aliveSince + ((Get-Date) - $offSince)
   if ($script:current) { State "working $($script:current)" } else { State "back" }
 }
 function Test-Discord {
@@ -125,9 +126,10 @@ function Test-Ok($heavy = $true, $video = $true) {
 function Test-WarmUp {
   $start = Get-Date; Start-Sleep $FirstCheck
   while ($true) {
+    Beat
     $r = Get-QuickResult
     $sec = [math]::Round(((Get-Date) - $start).TotalSeconds)
-    if ($r -eq "ok")  { Log ("   " + (T "warm.ready" "ready after {0} s" $sec)) "DarkGray"; return $true }
+    if ($r -eq "ok") { Log ("   " + (T "warm.ready" "ready after {0} s" $sec)) "DarkGray"; return $true }
     if ($r -eq "cut") { Log ("   " + (T "warm.cut" "YouTube cut by DPI after {0} s - dropped" $sec)) "DarkGray"; return $false }
     if ($sec -ge $MaxWarmUp) { Log ("   " + (T "warm.none" "no answer after {0} s" $sec)) "DarkGray"; return $false }
     Start-Sleep $CheckStep
@@ -136,12 +138,35 @@ function Test-WarmUp {
 function Test-Full {
   $passed = 0; $failedNames = @()
   foreach ($t in $Targets) {
+    Beat
     if ($t.Url -match 'www\.youtube\.com') { $ok = Test-Url $t.Url $YouTubeMin 262144 }
     elseif ($t.Url -match 'discord') { $ok = Test-Url $t.Url 0 0 $DiscordTimeout }
     else { $ok = Test-Url $t.Url 0 }
     if ($ok) { $passed++ } else { $failedNames += $t.Name }
   }
   return @{ Passed = $passed; Failed = $failedNames }
+}
+
+# ===================== WINDOW =====================
+# first run: the window stays during the full test, then a countdown, then it hides to the tray
+function Ask-Hide {
+  if ($ShowConsole) { return }
+  try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { Win "hide"; return }
+  Write-Host ""
+  for ($i = $HideCountdown; $i -gt 0; $i--) {
+    Write-Host ("`r" + (T "hide.count" "The window will hide to the tray in {0} s. Press any key to keep it open." $i) + "   ") -NoNewline -ForegroundColor Cyan
+    Beat
+    for ($j = 0; $j -lt 10; $j++) {
+      if ([Console]::KeyAvailable) {
+        [void][Console]::ReadKey($true); Write-Host ""
+        Log (T "hide.keep" "OK, the window stays open. You can hide it from the tray menu.") "Cyan"
+        Win "keep"; return
+      }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  Write-Host ""
+  Win "hide"
 }
 
 # ===================== CORE =====================
@@ -163,6 +188,7 @@ function Set-Working($name) {
   State "working $name"
   if (-not $script:VideoHost) { Update-VideoHost }
   Show-Top
+  if ($script:AskHide) { $script:AskHide = $false; Ask-Hide }
 }
 function Sweep-One($s) {
   Start-Strategy $s
@@ -177,6 +203,7 @@ function Full-Sweep {
   $total = $Targets.Count; $i = 0
   foreach ($s in $all) {
     $i++
+    Beat
     State "test $i/$($all.Count)"
     Log "[$i/$($all.Count)]" "DarkGray"
     Wait-Internet
@@ -194,8 +221,15 @@ function Full-Sweep {
 }
 function Find-Working($dead) {
   Rotate-Log
-  $order = @(Get-Order | Where-Object { $_ -ne $dead }); if ($dead) { $order += $dead }
+  # order: fresh strategies by rating, then quarantined ones, the one that just died - last
+  $now = Get-Date; $fresh = @(); $quar = @()
+  foreach ($s in (Get-Order)) {
+    if ($s -eq $dead) { continue }
+    if ($script:Quar.ContainsKey($s) -and $script:Quar[$s] -gt $now) { $quar += $s } else { $fresh += $s }
+  }
+  $order = @($fresh) + @($quar); if ($dead) { $order += $dead }
   foreach ($s in $order) {
+    Beat
     Wait-Internet
     Start-Strategy $s
     if (Test-WarmUp) { Set-Working $s; Save-Stats; return }
@@ -210,10 +244,12 @@ function Find-Working($dead) {
 
 # ===================== START =====================
 $script:current = $null; $script:aliveSince = Get-Date
+$script:AskHide = $FirstRun -and -not $ShowConsole
 $bad = 0; $checkNo = 0
-State "start"
+State "start"; Beat
 Log (T "start" "Start, waiting for network...")
 Start-Sleep 20
+Beat
 Wait-Internet
 if (-not (Load-Stats)) { Full-Sweep }
 foreach ($s in $all) { if (-not $Stats.ContainsKey($s)) { $Stats[$s] = 0 } }
@@ -224,8 +260,11 @@ Start-Strategy $first
 if (Test-WarmUp) { Set-Working $first } else { Find-Working $first }
 
 while ($true) {
+  Beat
   Start-Sleep $Interval
+  Beat
   $checkNo++
+  if ($checkNo % 60 -eq 0) { Rotate-Log }
   $heavy = ($checkNo % $HeavyEvery -eq 0)
   $video = ($checkNo % $VideoEvery -eq 0)
   if ($video -and -not $script:VideoHost) { Update-VideoHost }
@@ -240,11 +279,15 @@ while ($true) {
     $bad++
     Status (T "fail" "FAIL ({0}/{1}) - {2}" $bad $Fails $script:current) "Red"
     if ($bad -ge $Fails) {
+      # v9.5.2: a real penalty - the score is cut (by default in half), plus a quarantine
       $old = Get-Score $script:current
-      if ($old -gt 0) { $new = 0.7 * $old + 0.3 * $alive } else { $new = $alive }
-      Set-Score $script:current $new; Save-Stats
+      Set-Score $script:current ([math]::Max($old, $alive) * $FailPenalty); Save-Stats
       State "switching"
       Log (T "died" "{0} died after {1} min, new score {2}" $script:current $alive ([math]::Round((Get-Score $script:current), 1))) "Yellow"
+      if ($QuarantineMin -gt 0) {
+        $script:Quar[$script:current] = (Get-Date).AddMinutes($QuarantineMin)
+        Log (T "quar" "{0} is in quarantine for {1} min - trying others first" $script:current $QuarantineMin) "DarkYellow"
+      }
       Find-Working $script:current
       $bad = 0
     }

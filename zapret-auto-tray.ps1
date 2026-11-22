@@ -1,26 +1,27 @@
-# zapret-auto-tray.ps1 - tray launcher for Zapret Auto (v9.5)
-# Starts zapret-auto.ps1 without windows and shows a toggle icon near the clock.
-# Knob RIGHT = on:  green = working, yellow = testing / switching
-# Knob LEFT  = off: red = no strategy works, grey = no internet or stopped
+﻿# zapret-auto-tray.ps1 - tray launcher for Zapret Auto (v9.5.2)
+# Starts zapret-auto.ps1 and shows a toggle icon near the clock.
+# Knob RIGHT = on: green = working, yellow = testing / switching / not responding
+# Knob LEFT = off: red = no strategy works, grey = no internet or stopped
 # Right click: show/hide window, open log, stop. Double click: show/hide window.
-# Texts: zapret-auto-lang-XX.txt (same file as the main script), English if missing.
+# Settings: data\settings.txt (ShowConsole, NotifySwitch, Language, MemLimitMB, Interval).
 
-# ===================== SETTINGS =====================
-$ShowConsole  = $false   # $true = the Zapret Auto window stays visible
-$NotifySwitch = $false   # $true = notification on every strategy switch
-                         # (a notification when NO strategy works is always shown)
-$Language     = "auto"   # auto = by Windows language, or "ru" / "en"
-# ====================================================
+$ShowConsole = $false; $NotifySwitch = $false; $Language = "auto"; $MemLimitMB = 200; $Interval = 60
 
-$Me    = $PSCommandPath
-$Dir   = $PSScriptRoot
-$Core  = Join-Path $Dir "zapret-auto.ps1"
-$Log   = Join-Path $Dir "zapret-auto.log"
-$Stats = Join-Path $Dir "zapret-auto-stats.json"
-$StateFile = Join-Path $Dir "zapret-auto.state"
-$Sys32 = Join-Path $env:SystemRoot "System32"
-$PsExe = Join-Path $Sys32 "WindowsPowerShell\v1.0\powershell.exe"
-$Conhost = Join-Path $Sys32 "conhost.exe"
+$Me        = $PSCommandPath
+$Dir       = $PSScriptRoot
+$DataDir   = Join-Path $Dir "data"
+$Core      = Join-Path $Dir "zapret-auto.ps1"
+$Log       = Join-Path $DataDir "zapret-auto.log"
+$Stats     = Join-Path $DataDir "zapret-auto-stats.json"
+$OldStats  = Join-Path $Dir "zapret-auto-stats.json"
+$StateFile = Join-Path $DataDir "zapret-auto.state"
+$BeatFile  = Join-Path $DataDir "zapret-auto.beat"
+$WinFile   = Join-Path $DataDir "zapret-auto.window"
+$HwndFile  = Join-Path $DataDir "zapret-auto.hwnd"
+$SetFile   = Join-Path $DataDir "settings.txt"
+$Sys32     = Join-Path $env:SystemRoot "System32"
+$PsExe     = Join-Path $Sys32 "WindowsPowerShell\v1.0\powershell.exe"
+$Conhost   = Join-Path $Sys32 "conhost.exe"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -29,22 +30,39 @@ if (-not $isAdmin) {
 }
 
 $TrayMutex = New-Object System.Threading.Mutex($false, "Global\ZapretAutoTray")
-if (-not $TrayMutex.WaitOne(0)) { exit }
+try { $got = $TrayMutex.WaitOne(0) } catch { $got = $true }
+if (-not $got) { exit }
+
+# --- the few settings the tray needs (same file as the main script) ---
+if (Test-Path $SetFile) {
+  foreach ($raw in (Get-Content $SetFile -Encoding UTF8 -TotalCount 500)) {
+    if ($raw.Trim() -notmatch '^\$?(\w+)\s*=\s*(.*)$') { continue }
+    $k = $matches[1]; $v = ($matches[2] -replace '(^|\s)#.*$', '').Trim().Trim('"').Trim("'")
+    if ($k -eq "ShowConsole" -or $k -eq "NotifySwitch") {
+      $b = $null
+      if ($v -match '^(\$?true|1|yes|да)$') { $b = $true } elseif ($v -match '^(\$?false|0|no|нет)$') { $b = $false }
+      if ($null -ne $b) { Set-Variable -Name $k -Value $b }
+    }
+    elseif ($k -eq "MemLimitMB" -or $k -eq "Interval") { $n = 0; if ([int]::TryParse($v, [ref]$n) -and $n -ge 10) { Set-Variable -Name $k -Value $n } }
+    elseif ($k -eq "Language" -and $v -match '^(auto|[a-z]{2})$') { $Language = $v }
+  }
+}
+$StaleSec = [math]::Max(300, $Interval * 3)
 
 # --- language ---
-$L = @{}
+$LangTexts = @{}
 $LangCode = $Language
 if ($LangCode -eq "auto") { try { $LangCode = (Get-UICulture).TwoLetterISOLanguageName } catch { $LangCode = "en" } }
 if ($LangCode -notmatch '^[a-z]{2}$') { $LangCode = "en" }
 $LangFile = Join-Path $Dir "zapret-auto-lang-$LangCode.txt"
 if ($LangCode -ne "en" -and (Test-Path $LangFile)) {
   foreach ($ln in [IO.File]::ReadAllLines($LangFile, [Text.Encoding]::UTF8)) {
-    if ($ln -match '^\s*([\w.]+)\s*=\s*(.+)$') { $L[$matches[1]] = $matches[2].TrimEnd() }
+    if ($ln -match '^\s*([\w.]+)\s*=\s*(.+)$') { $LangTexts[$matches[1]] = $matches[2].TrimEnd() }
   }
 }
 function T($k, $en) {
   $s = $en
-  if ($L.ContainsKey($k)) { $s = $L[$k] }
+  if ($script:LangTexts.ContainsKey($k)) { $s = $script:LangTexts[$k] }
   if ($args.Count -gt 0) { $s = $s -f $args }
   return $s
 }
@@ -57,11 +75,12 @@ if (-not (Test-Path $Core)) {
 Add-Type -Namespace ZA -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);
 [DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsWindow(System.IntPtr h);
 '@
 function Hide-Win($h) { if ($h -and $h -ne [IntPtr]::Zero) { [void][ZA.Win]::ShowWindow($h, 0) } }
 function Show-Win($h) { if ($h -and $h -ne [IntPtr]::Zero) { [void][ZA.Win]::ShowWindow($h, 5) } }
 
-# ---------- toggle icon: same shape always, knob right = on, lightning in the knob ----------
+# ---------- toggle icon: knob right = on, lightning in the knob ----------
 function New-ToggleIcon($r, $g, $b, $on) {
   $bmp = New-Object System.Drawing.Bitmap 32, 32
   $gr = [System.Drawing.Graphics]::FromImage($bmp)
@@ -101,19 +120,22 @@ $Icons = @{
   grey   = New-ToggleIcon 130 130 140 $false
 }
 
-# first run (no rating yet): keep the window until a strategy works.
-# later runs: hide as soon as the start checks are passed (errors stay visible).
-$firstRun = -not (Test-Path $Stats)
-Remove-Item $StateFile -Force -ErrorAction SilentlyContinue
+# first run (no rating yet): the window stays until the main script says "hide" (after a countdown).
+$firstRun = -not (Test-Path $Stats) -and -not (Test-Path $OldStats)
+foreach ($f in @($StateFile, $WinFile, $HwndFile, $BeatFile)) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
 
 $Proc = Start-Process $Conhost -ArgumentList "`"$PsExe`" -NoProfile -ExecutionPolicy Bypass -File `"$Core`"" -PassThru
 $script:h = [IntPtr]::Zero
 $script:hidden = $false
 $script:manual = $false
+$script:pendingHide = $false
 $script:current = ""
 $script:since = $null
 $script:state = ""
 $script:last = ""
+$script:lastWin = ""
+$script:stale = $false
+$script:ticks = 0
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Visible = $true
@@ -127,20 +149,44 @@ function Set-Icon($st, $tip) {
 Set-Icon "yellow" (T "tray.starting" "starting...")
 
 function Toggle-Window {
+  if ($script:h -eq [IntPtr]::Zero) { return }
   if ($script:hidden) { Show-Win $script:h; $script:hidden = $false; $script:manual = $true }
   else { Hide-Win $script:h; $script:hidden = $true }
 }
-function Hide-Auto { if (-not $ShowConsole -and -not $script:hidden -and -not $script:manual) { Hide-Win $script:h; $script:hidden = $true } }
+function Hide-Auto {
+  if ($ShowConsole -or $script:hidden -or $script:manual) { return }
+  if ($script:h -eq [IntPtr]::Zero) { $script:pendingHide = $true; return }
+  Hide-Win $script:h; $script:hidden = $true; $script:pendingHide = $false
+}
 function Quit-Tray {
   $timer.Stop(); $icon.Visible = $false; $icon.Dispose()
   [System.Windows.Forms.Application]::Exit()
 }
+function Get-CoreProcs {
+  return @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*zapret-auto.ps1*" })
+}
 function Stop-All {
-  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.CommandLine -like "*zapret-auto.ps1*" } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  foreach ($p in (Get-CoreProcs)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
   Get-Process winws -ErrorAction SilentlyContinue | Stop-Process -Force
   Quit-Tray
+}
+# memory guard: restart the main script and the tray (winws keeps running, internet does not drop)
+function Restart-All($mb) {
+  $line = "$(Get-Date -f 'dd.MM HH:mm:ss') " + (T "tray.memrestart" "memory {0} MB is over the limit {1} MB - restarting Zapret Auto" $mb $MemLimitMB)
+  Add-Content -Path $Log -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+  $timer.Stop()
+  foreach ($p in (Get-CoreProcs)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+  Start-Sleep 2
+  $icon.Visible = $false; $icon.Dispose()
+  try { $TrayMutex.ReleaseMutex() } catch {}
+  Start-Process $PsExe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Me`""
+  [Environment]::Exit(0)
+}
+function Check-Memory {
+  $limit = [int64]$MemLimitMB * 1MB
+  $mine = [System.Diagnostics.Process]::GetCurrentProcess().WorkingSet64
+  if ($mine -gt $limit) { Restart-All ([math]::Round($mine / 1MB)) }
+  foreach ($p in (Get-CoreProcs)) { if ([int64]$p.WorkingSetSize -gt $limit) { Restart-All ([math]::Round([int64]$p.WorkingSetSize / 1MB)) } }
 }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -164,7 +210,7 @@ function Handle-State($s) {
   elseif ($s -match '^working (.+)$') {
     $script:current = Short $matches[1]; $script:since = Get-Date
     Set-Icon "green" (T "tray.work" "{0}, {1} min" $script:current 0)
-    Hide-Auto
+    if (-not $firstRun) { Hide-Auto }
     if ($NotifySwitch) { $icon.ShowBalloonTip(4000, "Zapret Auto", (T "tray.bal.switch" "Now using {0}" $script:current), [System.Windows.Forms.ToolTipIcon]::Info) }
   }
   elseif ($s -match '^nostrategy') {
@@ -178,22 +224,47 @@ function Handle-State($s) {
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 2000
 $timer.add_Tick({
-  if ($script:h -eq [IntPtr]::Zero) { $Proc.Refresh(); $script:h = $Proc.MainWindowHandle }
+  $script:ticks++
+  # the main script writes its own console window handle - no guessing
+  if ($script:h -eq [IntPtr]::Zero -and (Test-Path $HwndFile)) {
+    $n = [int64]0
+    if ([int64]::TryParse(([IO.File]::ReadAllText($HwndFile)).Trim(), [ref]$n) -and $n -ne 0 -and [ZA.Win]::IsWindow([IntPtr]$n)) {
+      $script:h = [IntPtr]$n
+      if ($ShowConsole) { Show-Win $script:h } elseif ($script:pendingHide) { Hide-Auto }
+    }
+  }
   foreach ($w in @(Get-Process winws -ErrorAction SilentlyContinue)) { Hide-Win $w.MainWindowHandle }
 
   if (Test-Path $StateFile) {
     try { $s = ([IO.File]::ReadAllText($StateFile)).Trim() } catch { $s = $script:last }
-    if ($s -and $s -ne $script:last) { $script:last = $s; Handle-State $s }
+    if ($s -and $s -ne $script:last) { $script:last = $s; if (-not $script:stale) { Handle-State $s } }
+  }
+  if (Test-Path $WinFile) {
+    try { $wv = ([IO.File]::ReadAllText($WinFile)).Trim() } catch { $wv = $script:lastWin }
+    if ($wv -ne $script:lastWin) {
+      $script:lastWin = $wv
+      if ($wv -eq "hide") { Hide-Auto } elseif ($wv -eq "keep") { $script:manual = $true }
+    }
   }
 
-  if ($script:state -eq "green" -and $script:since) {
+  # heartbeat: the main script must say "alive" regularly, otherwise the icon turns yellow
+  if (Test-Path $BeatFile) {
+    $age = ((Get-Date) - (Get-Item $BeatFile).LastWriteTime).TotalSeconds
+    if ($age -gt $StaleSec) {
+      if (-not $script:stale) { $script:stale = $true; Set-Icon "yellow" (T "tray.stale" "not responding - press Esc in its window") }
+    } elseif ($script:stale) { $script:stale = $false; $script:state = ""; Handle-State $script:last }
+  }
+
+  if ($script:state -eq "green" -and $script:since -and -not $script:stale) {
     $m = [math]::Floor(((Get-Date) - $script:since).TotalMinutes)
     Set-Icon "green" (T "tray.work" "{0}, {1} min" $script:current $m)
   }
 
+  if ($script:ticks % 150 -eq 0) { Check-Memory }
+
   if ($Proc.HasExited) {
     Set-Icon "grey" (T "tray.stopped" "stopped")
-    $icon.ShowBalloonTip(6000, "Zapret Auto", (T "tray.bal.stopped" "Zapret Auto has stopped. Run START zapret-auto.bat again."), [System.Windows.Forms.ToolTipIcon]::Warning)
+    $icon.ShowBalloonTip(6000, "Zapret Auto", (T "tray.bal.stopped" "Zapret Auto has stopped. Run the START bat again."), [System.Windows.Forms.ToolTipIcon]::Warning)
     Start-Sleep 6
     Quit-Tray
   }
