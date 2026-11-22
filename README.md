@@ -4,6 +4,8 @@
 
 Поставил один раз — и забыл. Работает в фоне, значок у часов показывает, всё ли в порядке.
 
+### [⬇️ Скачать Zapret Auto](https://github.com/Nikita-C1AY/zapret-auto/releases/latest/download/zapret-auto.zip)
+
 [English version](README.en.md)
 
 ---
