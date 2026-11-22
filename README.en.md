@@ -4,6 +4,8 @@ An add-on for [zapret-discord-youtube](https://github.com/Flowseal/zapret-discor
 
 Set it up once and forget about it. It runs in the background, and an icon near the clock shows whether everything is fine.
 
+### [⬇️ Download Zapret Auto](https://github.com/Nikita-C1AY/zapret-auto/releases/latest/download/zapret-auto.zip)
+
 [Русская версия](README.md)
 
 ---
