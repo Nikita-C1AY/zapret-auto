@@ -38,6 +38,7 @@ Before the first run, remove the zapret service: open `service.bat` and choose *
 - **Self-learning.** The longer a strategy survives, the higher its score. Over time the script learns what holds up best with your ISP.
 - **No internet:** the script simply waits, does not touch the ratings and does not count offline time.
 - **Changed zapret settings** (lists, ipset, strategies): the script notices it and runs a new test.
+- **New versions.** Once a day the script looks up the latest version number of Zapret Auto and of Flowseal's zapret and tells you when an update is out.
 
 ## What makes it different
 
@@ -46,6 +47,7 @@ Before the first run, remove the zapret service: open `service.bat` and choose *
 - **Almost no resources.** One short check per minute, the rest of the time it sleeps.
 - **Fast switching.** On failure it takes the next strategy from the rating right away, no full re-test.
 - **Learns your ISP.** Strategies that survive longer on your connection move up.
+- **Tells you about updates.** No need to watch GitHub — you get a notification when a new Zapret Auto or zapret version is out.
 - **Flexible.** Your own sites and services via packs, a favourite strategy, check frequency, quarantine and more — all in one file, `data\settings.txt`. No code editing, and everything is kept on updates.
 - **Open, checkable code.** A few PowerShell files you can read in full, plus SHA-256 hashes in every release.
 
@@ -63,9 +65,9 @@ The icon looks like a **toggle switch with a lightning bolt**: an oval with a wh
 | Grey, knob left | No internet, or the script is stopped |
 
 - **Double-click the icon** to show or hide the script window.
-- **Right-click** to show / hide the window, open the log or stop the script.
+- **Right-click** to show / hide the window, open the log or stop the script. When a new version is out, an item that opens its page appears there too.
 
-By default there is only one notification: when no strategy works.
+By default there are two kinds of notifications: when no strategy works, and when a new version of Zapret Auto or zapret is out — only once per version. Hovering over the icon also shows "· 9.x.x available".
 
 **The icon is hidden under the "^" arrow.** Windows puts new tray icons there by itself, a program cannot prevent it. To keep it always visible in the tray:
 
@@ -79,7 +81,8 @@ By default there is only one notification: when no strategy works.
 - **Check the hash before the first run.** In PowerShell: `Get-FileHash .\zapret-auto.zip` and compare it with the hash on the release page. The script shows its own hash too, but a fake could show anything, so check it yourself.
 - **The zapret folder gets locked:** only administrators can change files in it. This protects against the script being replaced, since it runs with administrator rights. To edit your files, save them to the Desktop and drag them back into the folder — Windows will ask for confirmation.
 - **Autostart only works from the root of a drive.** From a user folder the script still works, but without autostart.
-- The script **never downloads or updates anything by itself** and sends your data nowhere. It only checks whether sites open.
+- The script **never downloads or updates anything by itself** and sends your data nowhere. It checks whether sites open, and once a day asks GitHub only for the latest **version number** of Zapret Auto and of Flowseal's zapret. You install updates yourself. To turn the check off: `CheckUpdates = false` in `data\settings.txt`.
+- The tray button opens only two pages: the Zapret Auto releases and the zapret-discord-youtube releases.
 - Settings are read only by known names, and every value is checked.
 - To remove the folder lock: `icacls "C:\path\to\zapret" /reset /T /C /Q`
 
@@ -90,18 +93,28 @@ By default there is only one notification: when no strategy works.
 | `!START zapret-auto.bat` | Start |
 | `zapret-auto.ps1` | Main script: setup and settings check |
 | `zapret-auto-engine.ps1` | Checks and switching |
-| `zapret-auto-tray.ps1` | Tray icon |
+| `zapret-auto-tray.ps1` | Tray icon and update check |
 | `zapret-auto-lang-ru.txt` | Russian texts |
 | `packs\` | Service packs |
+| `docs\` | README and licenses |
 | `data\settings.txt` | **Your settings** — kept on updates |
 | `data\zapret-auto-targets.txt` | Your sites to check |
 | `data\zapret-auto-domains.txt` | Your domains to unblock |
 | `data\zapret-auto.log` | Log |
 | `data\zapret-auto-stats.json` | Strategy ratings. Delete it to start learning from scratch |
+| `data\versions.txt`, `data\update-seen.txt` | Service files for the update check |
 
 ## Updating
 
-Stop Zapret Auto (right-click the tray icon → "Stop"), replace the script files and the start file, run it again. The `data` folder with your settings and ratings stays as it is.
+1. Right-click the tray icon → "Stop".
+2. Unpack the new archive **over** the `zapret-auto` folder, replacing the files. Windows will ask for administrator confirmation — that is the folder lock, it is expected.
+3. Run `!START zapret-auto.bat`.
+
+The `data` folder with your settings and ratings stays as it is; new settings are added to `settings.txt` automatically.
+
+**If you edit the script files by hand**, save them as **UTF-8 with BOM**. Without it PowerShell misreads the Russian text, and the script or the tray icon will not start.
+
+Starting with 9.5.3, the script tells you about the next updates itself.
 
 ## For advanced users
 
@@ -116,6 +129,7 @@ All settings are in `data\settings.txt`, each with a comment. Delete a line to g
 - `ShowConsole`: `true` to always see the window.
 - `NotifySwitch`: `true` for a notification on every switch.
 - `MemLimitMB`: memory limit before an automatic restart (200).
+- `CheckUpdates`: `false` to stop checking for new versions (default `true`).
 - `Language`: `auto`, `ru` or `en`.
 
 ### Service packs
@@ -137,7 +151,8 @@ Only public IP addresses, no wider than /16, are accepted. Local networks (`192.
 
 - **Discord images** do not load on any strategy with some ISPs.
 - **Instagram** does not pass on any strategy yet, so its pack is disabled.
-- **The YouTube video server** is not always detected automatically. Then `redirector.googlevideo.com` is checked instead.
+- **The YouTube video server** is not always detected automatically. Then `redirector.googlevideo.com` is checked instead. Because of this, the YouTube page may open while videos or Shorts keep loading — this will be fixed in the next version.
+- **Steam Community, profiles and inventory** may not work even though games launch. Moving the Steam pack from `packs\disabled` to `normal` may help.
 - The script does not bypass IP-based blocking and does not help with services that refuse to work in Russia themselves.
 
 ## Reporting a problem
